@@ -1,0 +1,581 @@
+; This file defines non-primitive sprite commands except Control commands, which are defined in thread.logo.
+
+; ******* Control *******
+
+; Note: doForever, doIf, doIfElse, doRepeat, doWaitUntil, and doReturn are defined in thread.logo
+
+define wait:elapsed:from: [secs] [timedCommand :secs [] []]
+define mwait:elapsed:from: [secs] [timedCommand (:secs / 1000) [] []]
+
+to timedCommand :secs :startAction :endAction
+	if thread-end-msecs = [] [
+		set-thread-end-msecs %timer + (1000 * :secs)
+		run :startAction
+		yield stop]
+	if %timer < thread-end-msecs [yield stop]
+	run :endAction
+	set-thread-end-msecs []
+	set-thread-tmp []
+end
+
+to broadcast: :msg
+	ignore startThreadsForBroadcast :msg
+end
+
+to doBroadcastAndWait :msg
+	if empty? thread-tmp [
+		let [thrds startThreadsForBroadcast :msg]
+		if empty? :thrds [stop]
+		set-thread-tmp :thrds
+		yield stop]
+	dolist [thrd thread-tmp] [if first :thrd [yield stop]]	; found a running thread
+	set-thread-tmp []		; all threads have stopped; we're done
+end
+
+; start threads for the given broadcast and return the list of started threads
+to startThreadsForBroadcast :msg
+	let [me who result []]
+	dolist [o fput stage sprites] [
+		talkto :o
+		dolist [scr scripts] [
+			let [hat first :scr]
+			if (first :hat) = "EventHatMorph [
+				if (strequ (last :hat) :msg) [
+					make "result (lput (start-script :o :scr false) :result)
+	]]]]
+	talkto :me
+	output :result
+end
+
+to stopAll
+	let [me who]
+	stopAllSounds
+	stop-all-threads
+	dolist [s sprites][if sprite? :s [talkto :s filterReset]]
+	talkto stage filterReset
+	talkto :me
+	redrawall
+end
+
+define comment: [commentString isOpen] []  ; comments are no-ops
+
+; ******* Motion *******
+
+; Note: xpos, ypos, heading, and %scale are Logo reporters
+; %left, %top, %w, and %h give the top, left, width, and height of the scaled & rotated sprite in screen coordinates
+;   (i.e. origin at top-left corner of window, y grows down
+
+define forward: [n] [gotoX:y: (xpos + (:n * sin heading)) (ypos + (:n * cos heading))]
+define turnRight: [n] [heading: heading + :n]
+define turnLeft: [n] [heading: heading - :n]
+
+; handy shortcuts for testing
+define fd [n] [forward: :n]
+define rt [n] [turnRight: :n]
+define lt [n] [turnLeft: :n]
+
+to heading: :n
+	if isStage? [stop]
+	if :n < 0 [make "n remainder (:n + 360000000) 360]
+	changed
+	setheading :n
+	changed
+end
+
+to pointTowards: :thing
+	let [p mouseOrSpritePosition :thing]
+	heading: arctan2 ((first :p) - xpos) ((last :p) - ypos)]
+end
+
+define screenLeft [] [output 1]
+define screenRight [] [output screenLeft + 480]
+define screenTop [] [output 26]
+define screenBottom [] [output screenTop + 360]
+
+to bounceOffEdge
+	if (not touching: "edge) [stop]
+	turnAwayFromEdge
+	if (%left < screenLeft) [%setleft screenLeft]
+	if (%top < screenTop) [%settop screenTop]
+	if (%right > screenRight) [%setleft screenRight - %w]
+	if (%bottom > screenBottom) [%settop screenBottom - %h]
+end
+
+to turnAwayFromEdge
+	let [
+		closest 10000
+		d 10000
+		e 0]
+	make "d (max 0 (%left - screenLeft))			if :d < :closest [make "e 1 make "closest :d]
+	make "d (max 0 (%top - screenTop))				if :d < :closest [make "e 2 make "closest :d]
+	make "d (max 0 (screenRight - %right))		if :d < :closest [make "e 3 make "closest :d]
+	make "d (max 0 (screenBottom - %bottom))	if :d < :closest [make "e 4 make "closest :d]
+	if :closest > 10 [stop]
+	let [dx sin heading dy cos heading]
+	if :e = 1 [make "dx (max abs :dx 0.2)]
+	if :e = 2 [make "dy 0 - (max abs :dy 0.2)]
+	if :e = 3 [make "dx 0 - (max abs :dx 0.2)]
+	if :e = 4 [make "dy (max abs :dy 0.2)]
+	heading: arctan2 :dx :dy
+end
+
+to keepOnStage
+	let [inset 1]
+	if %right < (screenLeft + :inset) [%setleft (screenLeft + :inset - %w)]
+	if %bottom < (screenTop + :inset) [%settop (screenTop + :inset - %h)]
+	if %left > (screenRight - :inset) [%setleft (screenRight - :inset)]
+	if %top > (screenBottom - :inset) [%settop (screenBottom - :inset)]
+	updateBubble
+end
+
+to gotoX:y: :x :y
+	if isStage? [stop]
+	changed
+	setx :x
+	sety :y
+	keepOnStage
+	changed
+end
+
+to gotoSpriteOrMouse: :thing
+	let [p mouseOrSpritePosition :thing]
+	gotoX:y: (first :p) (last :p)
+end
+
+to glideSecs:toX:y:elapsed:from: :secs :dstX :dstY
+	if thread-end-msecs = [] [
+		set-thread-end-msecs %timer + (1000 * :secs)
+		set-thread-tmp (se xpos ypos :dstX :dstY (1000 * :secs) %timer)		; record start and end position
+		yield stop]
+	let [
+		startX (item 1 thread-tmp)
+		startY (item 2 thread-tmp)
+		endX (item 3 thread-tmp)
+		endY (item 4 thread-tmp)
+		totalDur (item 5 thread-tmp)
+		frac (%timer - (item 6 thread-tmp)) / :totalDur]
+	if %timer < thread-end-msecs [
+		gotoX:y:
+			(:startX + (:frac * (:endX - :startX)))
+			(:startY + (:frac * (:endY - :startY)))
+		yield stop]
+	gotoX:y: :endX :endY
+	set-thread-tmp []
+	set-thread-end-msecs []
+end
+
+define changeXposBy: [n] [xpos: xpos + :n]
+define changeYposBy: [n] [ypos: ypos + :n]
+define xpos: [n] [if not isStage? [changed setx :n keepOnStage changed]]
+define ypos: [n] [if not isStage? [changed sety :n keepOnStage changed]]
+
+define isStage? [] [output who = stage]
+
+to mouseOrSpritePosition :thing
+	if "mouse = :thing [output (se mouseX mouseY)]
+	let [me who result []]
+	talkto :thing
+	make "result (se xpos ypos)
+	talkto :me
+	output :result
+end
+
+; ******* Looks *******
+
+; Note: show and hide are Logo commands
+
+to lookLike: :costumeNameOrNum
+	if number? :costumeNameOrNum [
+		let [i ((:costumeNameOrNum - 1) % count costumes)]
+		if :i < 0 [make "i :i + count costumes]
+		make "costumeNameOrNum first (nth :i costumes)]
+	dotimes [i count costumes][
+		let [c nth :i costumes]
+		if (strequ (first :c) :costumeNameOrNum) [
+			setcindex :i
+			let [oldxpos xpos oldypos ypos]
+			changed
+			setcostume (item 2 :c) (item 3 :c) (item 4 :c)
+			gotoX:y: :oldxpos :oldypos
+			changed]]
+end
+
+to changeCostumeIndexBy: :n
+	let [i ((findcostumeIndex costume) + :n) % count costumes]
+	lookLike: (item 1 (nth :i costumes))
+end
+
+define nextBackground [] [nextCostume]
+to nextCostume
+	let [index ((findcostumeIndex costume) + 1) % count costumes]
+	lookLike: (item 1 (nth :index costumes))
+end
+
+define costumeIndex [] [output (findcostumeIndex costume) + 1]
+define backgroundIndex [] [output (findcostumeIndex costume) + 1]
+
+to findcostumeIndex :img
+	if (not empty? cindex) [output cindex]
+	dotimes [i count costumes][
+		if :img = (item 2 (nth :i costumes)) [
+			setcindex :i
+			output :i]]
+end
+
+define showBackground: [s] [lookLike: :s]
+define showScene: [s] [lookLike: :s]
+define changeBackgroundIndexBy: [n] [changeCostumeIndexBy: :n]
+define changeSceneIndexBy: [n] [changeCostumeIndexBy: :n]
+
+define say: [s] [talkbubble :s]
+define think: [s] [thinkbubble :s]
+define sayNothing [] [say: "||]
+
+to say:duration:elapsed:from: :s :secs
+	timedCommand :secs
+		[talkbubble :s]
+		[talkbubble "||]
+end
+
+to think:duration:elapsed:from: :s :secs
+	timedCommand :secs
+		[thinkbubble :s]
+		[thinkbubble "||]
+end
+
+to changeGraphicEffect:by: :effect :delta
+	if "color = :effect [setcolor color + :delta]
+	if "brightness = :effect [setbrightness brightness + :delta]
+	if "fisheye = :effect [setfisheye fisheye + :delta]
+	if "whirl = :effect [setwhirl whirl + :delta]
+	if "mosaic = :effect [setmosaic mosaic + :delta]
+	if "pixelate = :effect [setpixelate pixelate + :delta]
+	if "ghost = :effect [setalpha alpha - (:delta / 100)]
+	changed
+end
+
+to setGraphicEffect:to: :effect :val
+	if "color = :effect [setcolor :val]
+	if "brightness = :effect [setbrightness :val]
+	if "fisheye = :effect [setfisheye :val]
+	if "whirl = :effect [setwhirl :val]
+	if "mosaic = :effect [setmosaic :val]
+	if "pixelate = :effect [setpixelate :val]
+	if "ghost = :effect [setalpha (100 - :val) / 100]
+	changed
+end
+
+to filterReset
+	setcolor 0
+	setbrightness 0
+	setfisheye 0
+	setwhirl 0
+	setmosaic 0
+	setpixelate 0
+	setalpha 1
+	changed
+end
+
+to changeSizeBy: :n
+	if isStage? [stop]
+	changed
+	setscale %scale + (:n / 100)
+	changed
+end
+
+to setSizeTo: :n
+	if isStage? [stop]
+	changed
+	setscale (:n / 100)
+	changed
+end
+
+define scale [] [output 100 * %scale]
+define comeToFront [] [setsprites fput who (removeitem who sprites) changed]
+
+to goBackByLayers: :n
+	let [
+		oldlist removeitem who sprites
+		newlist []
+		cnt (itempos who sprites) + :n - 1]
+	repeat (max 0 (min :cnt count :oldlist)) [
+		make "newlist lput first :oldlist :newlist
+		make "oldlist butfirst :oldlist]
+	make "newlist lput who :newlist
+	setsprites se :newlist :oldlist
+	changed
+end
+
+; ******* Math *******
+
+; Note: arithmetic and logical operations are implemented thread.logo
+
+to randomFrom:to: :start :stop
+	let [
+		low (min :start :stop)
+		hi  (max :start :stop)]
+	ifelse (and (:low = (int :low)) (:hi = (int :hi)))
+		[output (int (rand * ((:hi + 1) - :low))) + :low]
+		[output (rand * (:hi - :low)) + :low]
+end
+
+define rounded [n] [output round :n]
+
+to computeFunction:of: :op :arg
+	if (strequ "abs :op) [output abs :arg]
+	if (strequ "sqrt :op) [output sqrt :arg]
+	if (strequ "sin :op) [output sin :arg]
+	if (strequ "cos :op) [output cos :arg]
+	if (strequ "tan :op) [output tan :arg]
+	if (strequ "asin :op) [output arcsin :arg]
+	if (strequ "acos :op) [output arccos :arg]
+	if (strequ "atan :op) [output arctan :arg]
+	if (strequ "ln :op) [output ln :arg]
+	if (strequ "log :op) [output (ln :arg) / (ln 10.0)]
+	if (strequ "|e ^| :op) [output exp :arg]
+	if (strequ "|10 ^| :op) [output power 10.0 :arg]
+	output 0
+end
+
+; ******* Sound *******
+
+; Note: beep is a Logo command
+
+to playSound: :soundName
+	let [snd soundNamed :soundName]
+	if list? :snd [stop]
+	ignore startSound :snd
+end
+
+to doPlaySoundAndWait :soundName
+	if thread-tmp = [] [
+		let [snd soundNamed :soundName]
+		if list? :snd [stop]
+		set-thread-tmp startSound :snd
+		yield stop]
+	if (isSoundPlaying? thread-tmp) [yield stop]
+	set-thread-tmp []
+end
+
+to soundNamed :soundName
+	if number? :soundName [
+		let [i ((:soundName - 1) % count sounds)]
+		if :i < 0 [make "i :i + count sounds]
+		make "soundName first (nth :i sounds)]
+	dolist [s sounds] [if (strequ (item 1 :s) :soundName) [output (item 2 :s)]]
+	output []
+end
+
+to drum:duration:elapsed:from: :drum :secs
+	timedCommand (:secs * 60) / tempo
+		[	set-thread-tmp round :drum
+			midinoteon  10 thread-tmp midiVolume]
+		[	midinoteoff 10 thread-tmp]
+end
+
+to noteOn:duration:elapsed:from: :key :secs
+	timedCommand (:secs * 60) / tempo
+		[	if midichan = [] [assign-midi-channel]
+			set-thread-tmp round :key
+			midinoteon  midichan thread-tmp midiVolume]
+		[	midinoteoff midichan thread-tmp]
+end
+
+to rest:elapsed:from: :secs
+	timedCommand (:secs * 60) / tempo
+		[]
+		[]
+end
+
+to midiInstrument: :n
+	if midichan = [] [assign-midi-channel]
+	midisetinstrument midichan :n
+end
+
+to assign-midi-channel
+	let [
+		in-use makelist 16
+		ch 0
+		besti 0
+		bestcnt 1000]
+	setmidichan []
+	dotimes [i 16] [setnth :i :in-use 0]
+	setnth 9 :in-use 1000
+	dolist [spr (fput stage sprites)] [
+		make "ch (get :spr "midichan)
+		if number? :ch [setitem :ch :in-use (item :ch :in-use) + 1]]
+	dotimes [i 16] [
+		if (nth :i :in-use) < :bestcnt [
+			make "besti :i
+			make "bestcnt nth :i :in-use]]
+	setmidichan :besti + 1
+end
+
+define changeTempoBy: [n] [setTempoTo: tempo + :n]
+define setTempoTo: [n] [make "<tempo> (max 20 (min 500 :n))]
+define tempo [] [output :<tempo>]
+define changeVolumeBy: [n] [setVolumeTo: volume + :n]
+define setVolumeTo: [n] [setvolume (max 0 (min 100 :n))]
+define midiVolume [] [output (max 0 (min 127 ((127 * volume) / 100)))]
+
+; ******* Pen *******
+
+; Note: setPenDown, setPenColor, setPenHue, setPenShade,setPenSize, penSize, clearPenTrails, and stampCostume are Logo commands
+
+define putPenDown [] [setPenDown true]
+define putPenUp [] [setPenDown false]
+define penColor: [c] [setPenColor :c]
+define changePenHueBy: [n] [setPenHue penHue + :n]
+define changePenShadeBy: [n] [setPenShade penShade + :n]
+define changePenSizeBy: [n] [penSize: penSize + :n]
+define setPenHueTo: [n] [setPenHue :n]
+define setPenShadeTo: [n] [setPenShade :n]
+define penSize: [n] [setPenSize (max 1 (min 500 :n))]
+
+; ******* Sensing *******
+
+; mouseX, mouseY, mousePressed, and soundLevel are Logo reporters
+
+define mousePressed [] [output mouseIsDown]
+ 
+to handle-keystrokes
+	let [k keystroke]
+	if empty? :k [stop]
+	dolist [o fput stage sprites] [
+		talkto :o
+		dolist [scr scripts] [
+			if (first first :scr) = "KeyEventHatMorph [
+				if :k = (asciiForKeyname (item 2 first :scr)) [ignore start-script :o :scr true]
+	]]]
+end
+
+to keypressed: :keyName
+	let [k asciiForKeyname :keyName]
+	if (and (:k > 64)(:k < 91)) [make "k (:k + 32)]  ; convert letters to lower case
+	output keydown? :k
+end
+
+to asciiForKeyname :keyName
+	if (count :keyName) = 1 [output ascii :keyName]
+	if :keyName = "enter [output 10]
+	if :keyName = "|left arrow| [output 28]
+	if :keyName = "|right arrow| [output 29]
+	if :keyName = "|up arrow| [output 30]
+	if :keyName = "|down arrow| [output 31]
+	if :keyName = "space [output 32]
+	output -1
+end
+
+to handle-mouseclicks
+	let [p mouseClick]
+	if empty? :p [stop]
+	dolist [o lput stage sprites] [
+		talkto :o
+		if (isShowing :o) [
+			if (containsPoint? (item 1 :p)(item 2 :p)) [
+				dolist [scr scripts] [
+					if (first first :scr) = "MouseClickEventHatMorph [ignore start-script :o :scr false]]
+				stop
+	]]]
+end
+
+to touching: :thing
+	if "mouse = :thing [output containsPoint? mouseX mouseY]
+	if "edge = :thing [
+		if %left < screenLeft [output true]
+		if %top < screenTop [output true]
+		if %right > screenRight [output true]
+		if %bottom > screenBottom [output true]
+		output false]
+	if sprite? :thing [
+		if (and (isShowing who) (isShowing :thing)) [
+			if (touchingSprite? :thing) [output true]]]
+	output false
+end
+
+define touchingColor: [c] [output touchingColor? :c]
+define color:sees: [c1 c2] [output colorTouchingColor? :c1 :c2]
+
+to distanceTo: :thing
+	let [
+		p mouseOrSpritePosition :thing
+		dx xpos - (first :p)
+		dy ypos - (last :p)]
+	output sqrt (:dx * :dx) + (:dy * :dy)
+end
+
+define timerReset [] [make "<basetime> %timer]
+define timer [] [output (%timer - :<basetime>) / 1000]
+define isLoud [] [output soundLevel > 35]
+
+define sensorPressed: [s] [output (sensor: :s) < 10]
+to sensor: :s
+	if (number? :s)   [output getSensorValue :s]
+	if (:s = "slider) [output getSensorValue 1]
+	if (:s = "light)  [output getSensorValue 2]
+	if (:s = "sound)  [output getSensorValue 3]
+	if (:s = "|button pressed|) [output getSensorValue 4]
+	if (or (strequ "A first :s) (strequ "A last :s)) [output getSensorValue 5]
+	if (or (strequ "B first :s) (strequ "B last :s)) [output getSensorValue 6]
+	if (or (strequ "C first :s) (strequ "C last :s)) [output getSensorValue 7]
+	if (or (strequ "D first :s) (strequ "D last :s)) [output getSensorValue 8]
+	output 0
+end
+
+to getAttribute:of: :attr :obj
+	if not (or (stage = :obj)(sprite? :obj)) [output 0]
+	let [
+		me who
+		result []
+		vdict []]
+	talkto :obj
+	if (stage = :obj) [
+		if (strequ :attr "|background #|)	[make "result backgroundIndex]
+		if (strequ :attr "volume)					[make "result volume]
+	]
+	if (sprite? :obj) [
+		if (strequ :attr "|x position|)	[make "result xpos]
+		if (strequ :attr "|y position|)	[make "result ypos]
+		if (strequ :attr "direction)		[make "result heading]
+		if (strequ :attr "|costume #|)	[make "result costumeIndex]
+		if (strequ :attr "size)					[make "result scale]
+		if (strequ :attr "volume)				[make "result volume]
+	]
+	talkto :me
+	if (not empty? :result) [output :result]
+
+	; look up :attr as a variable
+	make "vdict (get :obj "vars)
+	if not list? (get :vdict :attr) [output (get :vdict :attr)] ; local var
+	make "vdict (get stage "vars)]
+	if not list? (get :vdict :attr) [output (get :vdict :attr)] ; global var
+	output :result
+end
+
+; ******* Variables *******
+
+define getVar: [n] [output readVariable :n]
+define getUserVar: [n] [output readVariable :n]
+
+to readVariable :vname
+	let [vdict vardictfor :vname]
+	output get :vdict :vname
+end
+
+to changeVariable :vname :op :val
+	let [vdict vardictfor :vname]
+	ifelse (or (:op = "set:to:)(:op = "setVar:to:))
+		[put :vdict :vname :val]
+		[put :vdict :vname ((get :vdict :vname) + :val)]
+end
+
+; answer the vars object (for the current sprite or the stage) that defines the given variable
+; if the variable is not found in either the spite's or stage's variables, define
+; it as a stage variable (i.e. as a global)
+to vardictfor :vname
+	let [vdict (get who "vars)]
+	if not list? (get :vdict :vname) [output :vdict]
+	make "vdict (get stage "vars)
+	if list? (get :vdict :vname) [put :vdict :vname 0]	; auto-define the variable as a global
+	output :vdict
+end
